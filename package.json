@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "postinstall": "prisma generate",
-    "vercel-build": "prisma migrate deploy && prisma db seed && next build"
+    "vercel-build": "prisma migrate deploy && next build"
   },
   "dependencies": {
     "@prisma/adapter-neon": "^6.19.3",
