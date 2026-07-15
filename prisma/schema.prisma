@@ -1,0 +1,146 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/lib/prisma-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  userId       Int      @id @default(autoincrement()) @map("user_id")
+  username     String   @unique
+  displayName  String   @map("display_name")
+  passwordHash String   @map("password_hash")
+  role         String   @default("admin") @map("role")
+  isActive     String   @default("Y") @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @map("updated_at")
+
+  scanJobs ScanJob[]
+
+  @@map("users")
+}
+
+model Device {
+  deviceId      Int      @id @default(autoincrement()) @map("device_id")
+  macAddress    String   @unique @map("mac_address")
+  ipAddress     String   @map("ip_address")
+  hostname      String?  @map("hostname")
+  vendor        String?  @map("vendor")
+  deviceType    String?  @map("device_type")
+  osName        String?  @map("os_name")
+  osVersion     String?  @map("os_version")
+  firmwareVer   String?  @map("firmware_version")
+  openPorts     String?  @map("open_ports")
+  services      String?  @map("services")
+  isActive      String   @default("Y") @map("is_active")
+  firstSeen     DateTime @default(now()) @map("first_seen")
+  lastSeen      DateTime @default(now()) @map("last_seen")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @map("updated_at")
+
+  scanResults     ScanResult[]
+  riskAssessments RiskAssessment[]
+
+  @@map("devices")
+}
+
+model Vulnerability {
+  vulnId        Int      @id @default(autoincrement()) @map("vuln_id")
+  cveId         String   @unique @map("cve_id")
+  cvssScore     Float?   @map("cvss_score")
+  severity      String?  @map("severity")
+  description   String?  @map("description")
+  affectedCpe   String?  @map("affected_cpe")
+  remediation   String?  @map("remediation")
+  publishedDate DateTime? @map("published_date")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  scanResults ScanResult[]
+
+  @@map("vulnerabilities")
+}
+
+model ScanJob {
+  scanId      Int      @id @default(autoincrement()) @map("scan_id")
+  userId      Int?     @map("user_id")
+  scanType    String   @default("full") @map("scan_type")
+  status      String   @default("pending") @map("status")
+  progress    Int      @default(0) @map("progress")
+  deviceCount Int      @default(0) @map("device_count")
+  errorLog    String?  @map("error_log")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user            User?             @relation(fields: [userId], references: [userId])
+  scanResults     ScanResult[]
+  riskAssessments RiskAssessment[]
+
+  @@map("scan_jobs")
+}
+
+model ScanResult {
+  resultId       Int      @id @default(autoincrement()) @map("result_id")
+  scanId         Int      @map("scan_id")
+  deviceId       Int      @map("device_id")
+  port           Int?     @map("port")
+  protocol       String?  @map("protocol")
+  service        String?  @map("service")
+  banner         String?  @map("banner")
+  riskLevel      String?  @map("risk_level")
+  vulnId         Int?     @map("vuln_id")
+  detail         String?  @map("detail")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  scan          ScanJob       @relation(fields: [scanId], references: [scanId], onDelete: Cascade)
+  device        Device        @relation(fields: [deviceId], references: [deviceId])
+  vulnerability Vulnerability? @relation(fields: [vulnId], references: [vulnId])
+
+  @@map("scan_results")
+}
+
+model RiskAssessment {
+  assessmentId    Int      @id @default(autoincrement()) @map("assessment_id")
+  deviceId        Int      @map("device_id")
+  scanId          Int      @map("scan_id")
+  compositeScore  Float    @map("composite_score")
+  cveScore        Float    @map("cve_score")
+  exposureScore   Float    @map("exposure_score")
+  credentialScore Float    @map("credential_score")
+  networkScore    Float    @map("network_score")
+  recommendation  String?  @map("recommendation")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  device Device  @relation(fields: [deviceId], references: [deviceId])
+  scan   ScanJob @relation(fields: [scanId], references: [scanId])
+
+  @@map("risk_assessments")
+}
+
+model AlertRule {
+  ruleId    Int      @id @default(autoincrement()) @map("rule_id")
+  name      String   @map("name")
+  eventType String   @map("event_type")
+  threshold Float?   @map("threshold")
+  channels  String?  @map("channels")
+  enabled   String   @default("Y") @map("enabled")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@map("alert_rules")
+}
+
+model Notification {
+  notifId   Int      @id @default(autoincrement()) @map("notif_id")
+  ruleId    Int?     @map("rule_id")
+  deviceId  Int?     @map("device_id")
+  message   String   @map("message")
+  severity  String?  @map("severity")
+  isRead    String   @default("N") @map("is_read")
+  sentAt    DateTime @default(now()) @map("sent_at")
+
+  @@map("notifications")
+}

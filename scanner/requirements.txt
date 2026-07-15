@@ -1,0 +1,7 @@
+# IoT Vulnerability Scanner - Python dependencies
+# Install: pip install -r requirements.txt
+#
+# Optional: arp-scan (system tool for better ARP discovery)
+#   macOS: brew install arp-scan
+#   Linux: apt-get install arp-scan
+#   Windows: Use built-in ARP table (automatic fallback)
