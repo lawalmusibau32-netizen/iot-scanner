@@ -16,20 +16,35 @@ import json
 import argparse
 import ipaddress
 import threading
+import urllib.request
+import urllib.error
 from datetime import datetime
 from collections import defaultdict
 from typing import Optional
 
 from protocols import detect_protocol
 from anomaly import AnomalyEngine
-from alert import configure as configure_alerts, send_detection, send_rule_alert
+from alert import (
+    _RedirectHandler,
+    configure as configure_alerts,
+    configure_auth,
+    api_login,
+    lookup_device,
+    send_detection,
+    send_rule_alert,
+)
 
 HOME_NET = os.getenv("HOME_NET", "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12")
 EXTERNAL_NET = os.getenv("EXTERNAL_NET", "!$HOME_NET")
 API_BASE = os.getenv("IOT_API_URL", "http://localhost:3000")
 AUTH_TOKEN = os.getenv("IOT_AUTH_TOKEN", "")
+API_USERNAME = os.getenv("IOT_API_USERNAME", "admin")
+API_PASSWORD = os.getenv("IOT_API_PASSWORD", "admin123")
+
+_NO_API = False
 
 configure_alerts(API_BASE, AUTH_TOKEN)
+configure_auth(API_USERNAME, API_PASSWORD)
 
 # ── Rule engine ──────────────────────────────────────────────
 
@@ -69,20 +84,29 @@ class Rule:
         self.dst_port = m.group(6)
         opts = m.group(7)
 
+        # Match quoted values: key:"val"
         for opt in re.finditer(r'(\w+)\s*:\s*"([^"]*)"', opts):
             key, val = opt.group(1).lower(), opt.group(2)
             if key == "msg":
                 self.msg = val
             elif key == "content":
                 self.content.append(val)
-            elif key == "fast_pattern":
-                self.fast_pattern = val
             elif key == "sid":
                 self.sid = int(val)
-            elif key == "reference":
-                pass
-            elif key == "nocase":
-                pass
+
+        # Match unquoted values: key:val or key:val;
+        for opt in re.finditer(r'(\w+)\s*:\s*(\S+?)(?:;|\s|$)', opts):
+            key, val = opt.group(1).lower(), opt.group(2).rstrip(";")
+            if key == "sid" and not self.sid:
+                self.sid = int(val)
+            elif key == "dsize":
+                self.dsize = val
+            elif key == "detection_filter":
+                pass  # handled separately below
+
+        # Match bare flags: fast_pattern, nocase, etc.
+        for opt in re.finditer(r'(?<![:\w])\b(fast_pattern|nocase|http_method|http_uri)\b', opts):
+            pass
 
         dsize_m = re.search(r'dsize\s*:\s*([<>]?\d+)', opts)
         if dsize_m:
@@ -168,7 +192,60 @@ class RuleEngine:
 # ── Packet processing ────────────────────────────────────────
 
 anomaly = AnomalyEngine()
-rule_engine = RuleEngine(os.getenv("RULES_DIR", "rules"))
+rule_engine = None  # initialized after args parse
+
+def _resolve_rules_dir(given: str) -> str:
+    """Resolve rules directory relative to scanner/ if not absolute."""
+    if os.path.isdir(given):
+        return given
+    alt = os.path.join(os.path.dirname(__file__), given)
+    if os.path.isdir(alt):
+        return alt
+    alt2 = os.path.join(os.path.dirname(__file__), "rules")
+    if os.path.isdir(alt2):
+        return alt2
+    return given
+
+def _init_engine(rules_dir: str = "rules"):
+    global rule_engine
+    rule_engine = RuleEngine(_resolve_rules_dir(rules_dir))
+
+def _init_api():
+    if AUTH_TOKEN:
+        print(f"[sniffer] Using provided auth token")
+    elif API_BASE and API_BASE != "http://localhost:3000":
+        print(f"[sniffer] Attempting API login to {API_BASE}...")
+        if api_login():
+            print(f"[sniffer] API login successful")
+        else:
+            print(f"[sniffer] API login failed — alerts may not be authenticated")
+
+def _prefetch_devices():
+    """Warm the device cache with all known devices."""
+    import ipaddress
+    try:
+        req = urllib.request.Request(f"{API_BASE}/api/devices")
+        if AUTH_TOKEN:
+            req.add_header("Cookie", f"iotscanner_token={AUTH_TOKEN}")
+        opener = urllib.request.build_opener(_RedirectHandler)
+        with opener.open(req, timeout=15) as resp:
+            devices = json.loads(resp.read().decode())
+            if isinstance(devices, list):
+                for d in devices:
+                    ip = d.get("ipAddress")
+                    if ip:
+                        from alert import _device_cache, _device_cache_lock
+                        with _device_cache_lock:
+                            _device_cache[ip] = {
+                                "deviceId": d.get("deviceId"),
+                                "deviceType": d.get("deviceType", "Unknown"),
+                                "hostname": d.get("hostname", ""),
+                                "vendor": d.get("vendor", ""),
+                            }
+                        device_id_map[ip] = d.get("deviceId")
+        print(f"[sniffer] Pre-fetched {len(device_id_map)} devices")
+    except Exception as e:
+        print(f"[sniffer] Device pre-fetch skipped: {e}")
 
 # Threshold tracking for detection_filter
 _track_counters = defaultdict(lambda: defaultdict(lambda: {"count": 0, "window_start": 0}))
@@ -236,6 +313,17 @@ def _severity_from_rule(rule: Rule) -> str:
     return "Low"
 
 def _lookup_device_type(ip: str) -> str:
+    if ip in device_id_map:
+        # Already resolved
+        return device_id_map.get(ip + "_type", "Unknown")
+    if _NO_API:
+        return "Unknown"
+    info = lookup_device(ip)
+    if info:
+        if info.get("deviceId"):
+            device_id_map[ip] = info["deviceId"]
+            device_id_map[ip + "_type"] = info.get("deviceType", "Unknown")
+        return info.get("deviceType", "Unknown")
     return "Unknown"
 
 # ── Live capture ─────────────────────────────────────────────
@@ -271,9 +359,18 @@ def pcap_analysis(path: str):
         sys.exit(1)
     print(f"[sniffer] Analyzing {path}...")
     packets = rdpcap(path)
-    print(f"[sniffer] Loaded {len(packets)} packets")
-    for pkt in packets:
+    total = len(packets)
+    print(f"[sniffer] Loaded {total} packets")
+    batch_size = max(1, total // 10)
+    for idx, pkt in enumerate(packets):
         process_packet(pkt)
+        if (idx + 1) % batch_size == 0:
+            pct = (idx + 1) / total * 100
+            print(f"[sniffer] Progress: {idx+1}/{total} ({pct:.0f}%)")
+    print(f"[sniffer] Analysis complete. Flushing alerts...")
+    from alert import _flush_batch
+    _flush_batch()
+    print(f"[sniffer] Done.")
 
 # ── CLI ─────────────────────────────────────────────────────
 
@@ -282,10 +379,21 @@ if __name__ == "__main__":
     parser.add_argument("--pcap", help="Analyze a PCAP file instead of live capture")
     parser.add_argument("-i", "--interface", help="Network interface to sniff")
     parser.add_argument("--rules", default="rules", help="Rules directory")
+    parser.add_argument("--no-api", action="store_true", help="Skip API calls (offline mode)")
     args = parser.parse_args()
 
-    if args.rules:
-        rule_engine = RuleEngine(args.rules)
+    _NO_API = args.no_api
+
+    _init_engine(args.rules)
+
+    if not args.no_api:
+        _init_api()
+        _prefetch_devices()
+    else:
+        print(f"[sniffer] Offline mode — no API calls")
+
+    print(f"[sniffer] Rules loaded: {len(rule_engine.rules)}")
+    print(f"[sniffer] API: {API_BASE}")
 
     if args.pcap:
         pcap_analysis(args.pcap)

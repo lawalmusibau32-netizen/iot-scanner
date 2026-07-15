@@ -15,11 +15,43 @@ import urllib.error
 from datetime import datetime
 from typing import Optional
 
+class _RedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return urllib.request.Request(newurl, data=req.data, headers=req.headers, method=req.method)
+
 API_BASE = os.getenv("IOT_API_URL", "http://localhost:3000")
 AUTH_TOKEN = os.getenv("IOT_AUTH_TOKEN", "")
+API_USERNAME = os.getenv("IOT_API_USERNAME", "admin")
+API_PASSWORD = os.getenv("IOT_API_PASSWORD", "admin123")
+_OPENER = urllib.request.build_opener(_RedirectHandler)
 
 def log(msg: str):
     print(f"[{datetime.now().isoformat()}] {msg}", flush=True)
+
+def api_login():
+    """Authenticate and store the session token."""
+    global AUTH_TOKEN
+    if AUTH_TOKEN:
+        return True
+    try:
+        payload = json.dumps({"username": API_USERNAME, "password": API_PASSWORD}).encode()
+        req = urllib.request.Request(
+            f"{API_BASE}/api/auth/login",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _OPENER.open(req, timeout=15) as resp:
+            for cookie in resp.headers.get_all("Set-Cookie") or []:
+                if "iotscanner_token" in cookie:
+                    start = cookie.find("iotscanner_token=") + len("iotscanner_token=")
+                    end = cookie.find(";", start)
+                    AUTH_TOKEN = cookie[start:end] if end != -1 else cookie[start:]
+                    return True
+        return False
+    except Exception as e:
+        log(f"API login failed: {e}")
+        return False
 
 def arp_scan(network: str = "192.168.1.0/24") -> list[dict]:
     """Discover live hosts via ARP scan using arp-scan or system ARP table."""
@@ -162,41 +194,133 @@ def check_default_creds(ip: str, ports: list[dict]) -> list[dict]:
             })
     return results
 
-def create_scan_job() -> Optional[int]:
+def create_scan_job(scan_type: str = "full") -> Optional[int]:
     """Create a new scan job on the server."""
     try:
         req = urllib.request.Request(
             f"{API_BASE}/api/scans",
-            data=json.dumps({"scanType": "full"}).encode(),
+            data=json.dumps({"scanType": scan_type}).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Cookie": f"iotscanner_token={AUTH_TOKEN}"
             },
             method="POST"
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _OPENER.open(req, timeout=15) as resp:
             data = json.loads(resp.read())
             return data.get("scan", {}).get("scanId")
     except Exception as e:
         log(f"Failed to create scan job: {e}")
         return None
 
-def send_scan_results(scan_id: int, devices: list[dict]):
-    """Send scan results to the server."""
+def send_scan_results(scan_id: int, scanned_devices: list[dict]):
+    """Register devices and send scan results to the server."""
+    results = []
+    risks = []
+    for dev in scanned_devices:
+        device_id = _register_device(dev)
+        if device_id is None:
+            continue
+        for port in dev.get("ports", []):
+            results.append({
+                "deviceId": device_id,
+                "port": port["port"],
+                "protocol": port.get("protocol", "tcp"),
+                "service": port.get("service", "unknown"),
+                "banner": port.get("banner", ""),
+                "riskLevel": "Medium" if port["port"] in (23, 21) else "Low",
+            })
+        # Generate basic risk assessment per device
+        risk_score = _calc_risk(dev)
+        risks.append({
+            "deviceId": device_id,
+            "compositeScore": risk_score,
+            "cveScore": 0,
+            "exposureScore": min(len(dev.get("ports", [])) * 1.5, 10),
+            "credentialScore": 5 if any(p["port"] in (22, 23) for p in dev.get("ports", [])) else 0,
+            "networkScore": 3 if dev.get("deviceType") == "Unknown" else 1,
+        })
+
+    payload = {"results": results, "risks": risks}
     try:
         req = urllib.request.Request(
             f"{API_BASE}/api/scans/{scan_id}/results",
-            data=json.dumps({"devices": devices}).encode(),
+            data=json.dumps(payload).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Cookie": f"iotscanner_token={AUTH_TOKEN}"
             },
             method="POST"
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            log(f"Results sent successfully")
+        with _OPENER.open(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+            log(f"Results sent: {result.get('createdResults', 0)} findings, {result.get('createdRisks', 0)} risk assessments")
     except Exception as e:
         log(f"Failed to send results: {e}")
+
+def _find_device_by_ip(ip: str) -> Optional[int]:
+    """Look up an existing device by IP, return deviceId."""
+    try:
+        req = urllib.request.Request(
+            f"{API_BASE}/api/devices",
+            headers={"Cookie": f"iotscanner_token={AUTH_TOKEN}"},
+        )
+        with _OPENER.open(req, timeout=15) as resp:
+            devices = json.loads(resp.read().decode())
+            if isinstance(devices, list):
+                for d in devices:
+                    if d.get("ipAddress") == ip:
+                        return d.get("deviceId")
+        return None
+    except Exception:
+        return None
+
+def _register_device(dev: dict) -> Optional[int]:
+    """Register a device on the server, return its deviceId."""
+    try:
+        req = urllib.request.Request(
+            f"{API_BASE}/api/devices",
+            data=json.dumps({
+                "macAddress": dev.get("macAddress", ""),
+                "ipAddress": dev.get("ipAddress", ""),
+                "hostname": dev.get("hostname", ""),
+                "vendor": dev.get("vendor", "Unknown"),
+                "deviceType": dev.get("deviceType", "Other"),
+                "openPorts": dev.get("openPorts", ""),
+                "services": dev.get("services", "{}"),
+            }).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": f"iotscanner_token={AUTH_TOKEN}"
+            },
+            method="POST"
+        )
+        with _OPENER.open(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode())
+            return body.get("deviceId")
+    except urllib.error.HTTPError as e:
+        if e.code in (409, 400):
+            existing = _find_device_by_ip(dev.get("ipAddress", ""))
+            if existing:
+                return existing
+        log(f"  Failed to register device {dev.get('ipAddress')}: {e}")
+        return None
+    except Exception as e:
+        log(f"  Device registration error: {e}")
+        return None
+
+def _calc_risk(dev: dict) -> float:
+    """Calculate a rough composite risk score for a device."""
+    score = 0
+    ports = dev.get("ports", [])
+    port_nums = [p["port"] for p in ports]
+    if 23 in port_nums: score += 4  # Telnet
+    if 21 in port_nums: score += 3  # FTP
+    if 22 in port_nums: score += 2  # SSH
+    if 445 in port_nums: score += 3  # SMB
+    if 3389 in port_nums: score += 2  # RDP
+    score += min(len(ports) * 0.5, 3)
+    return min(score, 10)
 
 def update_scan_status(scan_id: int, status: str, progress: int = 0, device_count: int = 0):
     try:
@@ -209,15 +333,30 @@ def update_scan_status(scan_id: int, status: str, progress: int = 0, device_coun
             },
             method="PUT"
         )
-        urllib.request.urlopen(req, timeout=10)
+        _OPENER.open(req, timeout=10)
     except:
         pass
 
 def main():
-    network = os.getenv("IOT_NETWORK", "192.168.1.0/24")
+    import argparse
+    parser = argparse.ArgumentParser(description="IoT device scanner")
+    parser.add_argument("--network", default=os.getenv("IOT_NETWORK", "192.168.1.0/24"))
+    parser.add_argument("--scan-type", default=os.getenv("IOT_SCAN_TYPE", "full"))
+    parser.add_argument("--scan-id", type=int, help="Resume an existing scan job")
+    args = parser.parse_args()
+
+    network = args.network
     log(f"Starting IoT scan on {network}")
 
-    scan_id = create_scan_job()
+    if not AUTH_TOKEN:
+        log("Authenticating with API...")
+        api_login()
+
+    if args.scan_id:
+        scan_id = args.scan_id
+        log(f"Resuming existing scan job #{scan_id}")
+    else:
+        scan_id = create_scan_job(args.scan_type)
     if not scan_id:
         log("Aborting: could not create scan job")
         sys.exit(1)

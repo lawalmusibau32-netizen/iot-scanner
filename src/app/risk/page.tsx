@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { prisma } from "@/lib/prisma";
 import { formatDateTime, cn } from "@/lib/utils";
 import { PageHeader } from "@/components/shared/page-header";

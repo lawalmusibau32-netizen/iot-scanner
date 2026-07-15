@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { cn, formatDateTime } from "@/lib/utils";
@@ -14,7 +16,8 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { Scan, Plus, Eye } from "lucide-react";
+import { NewScanButton } from "@/components/scans/new-scan-button";
+import { Eye } from "lucide-react";
 
 function statusBadge(status: string) {
   switch (status) {
@@ -51,14 +54,7 @@ export default async function ScansPage() {
       <PageHeader
         title="Scan History"
         description="Past and current network scans"
-        actions={
-          <form action="/api/scans" method="POST">
-            <Button type="submit">
-              <Plus className="h-4 w-4" />
-              New Scan
-            </Button>
-          </form>
-        }
+        actions={<NewScanButton />}
       />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
