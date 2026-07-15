@@ -341,6 +341,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="IoT device scanner")
     parser.add_argument("--network", default=os.getenv("IOT_NETWORK", "192.168.1.0/24"))
+    parser.add_argument("--target-ips", help="Comma-separated IPs to scan (skip ARP discovery)")
     parser.add_argument("--scan-type", default=os.getenv("IOT_SCAN_TYPE", "full"))
     parser.add_argument("--scan-id", type=int, help="Resume an existing scan job")
     args = parser.parse_args()
@@ -363,9 +364,14 @@ def main():
 
     update_scan_status(scan_id, "running", progress=5)
 
-    log("Phase 1: Network discovery (ARP scan)")
-    hosts = arp_scan(network)
-    log(f"Found {len(hosts)} devices")
+    if args.target_ips:
+        ips = [ip.strip() for ip in args.target_ips.split(",") if ip.strip()]
+        log(f"Targeting {len(ips)} specific IPs (skipping ARP discovery)")
+        hosts = [{"ip": ip, "mac": "", "vendor": ""} for ip in ips]
+    else:
+        log("Phase 1: Network discovery (ARP scan)")
+        hosts = arp_scan(network)
+        log(f"Found {len(hosts)} devices")
 
     if not hosts:
         update_scan_status(scan_id, "completed", progress=100, device_count=0)
