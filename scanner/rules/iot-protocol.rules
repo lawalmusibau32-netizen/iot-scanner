@@ -1,0 +1,17 @@
+# IoT Protocol Violation Signatures
+# Detects abnormal protocol behavior specific to IoT/monitoring/embed devices
+
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"MQTT - Unencrypted publish containing PHI"; content:"|3e|"; content:"patient"; nocase; sid:2000001;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"MQTT - Device publishing without TLS"; flow:to_server; sid:2000002;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 8883 (msg:"MQTT TLS - Certificate mismatch"; sid:2000003;)
+alert udp $HOME_NET any -> $EXTERNAL_NET 5683 (msg:"CoAP - Unencrypted medical device query"; content:"/patient"; nocase; sid:2000004;)
+alert udp any any -> $HOME_NET 5684 (msg:"CoAP - DTLS connection from unexpected source"; sid:2000005;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 2760 (msg:"DICOM - Medical image transmission detected"; content:"DICOM"; sid:2000006;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 2760 (msg:"DICOM - PHI exposure via unencrypted connection"; content:"PATIENT"; sid:2000007;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 2575 (msg:"HL7 - Medical record transmission"; content:"MSH|"; sid:2000008;)
+alert tcp any any -> $HOME_NET 2575 (msg:"HL7 - External entity querying medical data"; content:"QRY|"; sid:2000009;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 2575 (msg:"HL7 - Patient data leaving network"; content:"PID|"; sid:2000010;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 5060 (msg:"SIP - VoIP call from medical device"; content:"INVITE"; sid:2000011;)
+alert tcp $HOME_NET 80 -> $EXTERNAL_NET any (msg:"HTTP - Device beaconing with patient data in URL"; content:"/api/vitals"; http_uri; sid:2000012;)
+alert tcp $HOME_NET 443 -> $EXTERNAL_NET any (msg:"HTTPS - Device connecting to unknown medical cloud"; sid:2000013;)
+alert tcp any any -> $HOME_NET 4840 (msg:"OPC UA - Industrial control protocol on medical network"; sid:2000014;)

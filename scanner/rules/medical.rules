@@ -1,0 +1,13 @@
+# Medical Device-Specific Signatures
+# Detects dangerous behaviors specific to healthcare IoT
+
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"Infusion pump - communication outside approved times"; time:22:00-06:00; sid:3000001;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"Patient monitor - unexpected large data transfer"; dsize:>1000000; sid:3000002;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"PACS server - bulk image export (possible PHI theft)"; threshold:type both, track by_src, count 50, seconds 300; sid:3000003;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 22 (msg:"Medical device initiating SSH to external server"; sid:3000004;)
+alert tcp $HOME_NET 443 -> $EXTERNAL_NET any (msg:"FDA safety alert - recalled device communicating"; sid:3000005;)
+alert tcp $HOME_NET any -> $HOME_NET 3389 (msg:"RDP connection to medical device - unauthorized admin"; sid:3000006;)
+alert tcp any any -> $HOME_NET 161 (msg:"SNMP read on medical device"; content:"public"; sid:3000007;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 443 (msg:"Firmware download from untrusted source"; content:"/firmware"; http_uri; sid:3000008;)
+alert udp $HOME_NET 514 -> $EXTERNAL_NET any (msg:"Device syslog leaking patient data"; content:"PATIENT"; nocase; sid:3000009;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 80 (msg:"Medical device to known C2 domain"; reference:url, threatintel.io/iot-c2; sid:3000010;)

@@ -1,7 +1,26 @@
-# IoT Vulnerability Scanner - Python dependencies
+# IoT Security Monitor - Python Dependencies
 # Install: pip install -r requirements.txt
-#
-# Optional: arp-scan (system tool for better ARP discovery)
-#   macOS: brew install arp-scan
-#   Linux: apt-get install arp-scan
-#   Windows: Use built-in ARP table (automatic fallback)
+
+# Packet capture
+scapy>=2.5.0
+
+# HTTP/HTTPS parsing
+httptools>=0.6.0
+
+# Protocol parsing
+mqtt>=0.6.0
+construct>=2.10.0
+
+# ML/anomaly detection
+numpy>=1.24.0
+
+# WebSocket client (for streaming alerts to dashboard)
+websocket-client>=1.6.0
+
+# Async IO
+aiohttp>=3.9.0
+
+# System: Npcap (Windows) or libpcap (Linux/macOS)
+#   Windows: https://npcap.com/#download
+#   macOS: brew install libpcap
+#   Linux: apt-get install libpcap-dev
