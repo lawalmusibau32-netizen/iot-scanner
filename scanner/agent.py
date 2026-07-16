@@ -184,13 +184,22 @@ def _grab_banner(ip, port, timeout=3):
 def run_scan(scan_job):
     scan_id = scan_job["scanId"]
     scan_type = scan_job.get("scanType", "full")
-    log(f"Processing scan job #{scan_id} ({scan_type})")
+    target_ip = scan_job.get("targetIp")
+    log(f"Processing scan job #{scan_id} ({scan_type})" + (f" targeting {target_ip}" if target_ip else ""))
 
     update_scan(scan_id, "running", progress=1)
 
-    devices = fetch_devices()
-    active = [d for d in devices if d.get("isActive") == "Y" and d.get("ipAddress")]
-    log(f"Found {len(active)} registered devices to scan")
+    if target_ip:
+        devices = fetch_devices()
+        active = [d for d in devices if d.get("isActive") == "Y" and d.get("ipAddress") == target_ip]
+        if not active:
+            log(f"  No registered device found with IP {target_ip}, scanning anyway")
+            active = [{"deviceId": None, "ipAddress": target_ip, "hostname": "", "vendor": "", "deviceType": "Other"}]
+        log(f"  Targeting 1 device at {target_ip}")
+    else:
+        devices = fetch_devices()
+        active = [d for d in devices if d.get("isActive") == "Y" and d.get("ipAddress")]
+        log(f"Found {len(active)} registered devices to scan")
 
     if not active:
         update_scan(scan_id, "completed", progress=100, device_count=0)

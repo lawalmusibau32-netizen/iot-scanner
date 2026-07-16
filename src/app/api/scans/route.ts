@@ -4,6 +4,7 @@ import { z } from "zod";
 
 const createScanSchema = z.object({
   scanType: z.string().min(1),
+  targetIp: z.string().optional(),
 });
 
 export async function GET() {
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: parsed.error.flatten().fieldErrors }, { status: 400 });
     }
     const scan = await prisma.scanJob.create({
-      data: { scanType: parsed.data.scanType, status: "pending" },
+      data: { scanType: parsed.data.scanType, status: "pending", targetIp: parsed.data.targetIp ?? null },
     });
     return NextResponse.json(scan, { status: 201 });
   } catch (error) {

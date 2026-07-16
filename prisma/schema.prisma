@@ -70,6 +70,7 @@ model ScanJob {
   status      String   @default("pending") @map("status")
   progress    Int      @default(0) @map("progress")
   deviceCount Int      @default(0) @map("device_count")
+  targetIp    String?  @map("target_ip")
   errorLog    String?  @map("error_log")
   startedAt   DateTime? @map("started_at")
   completedAt DateTime? @map("completed_at")

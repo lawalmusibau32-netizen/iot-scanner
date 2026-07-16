@@ -36,6 +36,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: parsed.error.flatten().fieldErrors }, { status: 400 });
     }
     const device = await prisma.device.create({ data: parsed.data });
+
+    // Auto-create a scan job targeting this device
+    await prisma.scanJob.create({
+      data: {
+        scanType: "targeted",
+        status: "pending",
+        targetIp: device.ipAddress,
+      },
+    });
+
     return NextResponse.json(device, { status: 201 });
   } catch (error) {
     console.error("POST /api/devices error:", error);
