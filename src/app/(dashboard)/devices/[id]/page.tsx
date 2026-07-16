@@ -16,7 +16,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { Edit, Monitor, Globe, Shield, Cpu, Wifi } from "lucide-react";
+import { Edit, Monitor, Globe, Shield, Cpu, Wifi, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default async function DeviceDetailPage(props: { params: Promise<{ id: string }> }) {
@@ -62,12 +62,20 @@ export default async function DeviceDetailPage(props: { params: Promise<{ id: st
         title={device.hostname ?? device.ipAddress}
         description={`Device details and assessment`}
         actions={
-          <Button variant="outline" asChild>
-            <Link href={`/devices/${id}/edit`}>
-              <Edit className="h-4 w-4" />
-              Edit
-            </Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="default" asChild>
+              <Link href={`/devices/${id}/report`}>
+                <FileText className="h-4 w-4" />
+                Generate Report
+              </Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link href={`/devices/${id}/edit`}>
+                <Edit className="h-4 w-4" />
+                Edit
+              </Link>
+            </Button>
+          </div>
         }
       />
 
