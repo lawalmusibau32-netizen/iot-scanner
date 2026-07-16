@@ -248,8 +248,11 @@ export async function POST(request: Request) {
         recommendation,
       },
     }, { status: 201 });
-  } catch (error) {
+  } catch (error: any) {
     console.error("POST /api/devices error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    const message = error?.code === "P2002"
+      ? "A device with this MAC address already exists"
+      : error?.message || "Internal server error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

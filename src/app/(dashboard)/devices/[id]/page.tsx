@@ -50,10 +50,10 @@ export default async function DeviceDetailPage(props: { params: Promise<{ id: st
     } catch { return []; }
   })();
 
-  const services = (() => {
+  const servicesMap = (() => {
     try {
-      return device.services ? JSON.parse(device.services) : [];
-    } catch { return []; }
+      return device.services ? JSON.parse(device.services) as Record<string, string> : {};
+    } catch { return {}; }
   })();
 
   return (
@@ -208,13 +208,11 @@ export default async function DeviceDetailPage(props: { params: Promise<{ id: st
               </TableHeader>
               <TableBody>
                 {ports.map((port, i) => {
-                  const svc = (services as Array<{ port: number; name: string }>)?.find(
-                    (s: { port: number; name: string }) => s.port === parseInt(port, 10)
-                  );
+                  const svc = servicesMap[port] || "—";
                   return (
                     <TableRow key={i}>
                       <TableCell className="font-mono">{port}</TableCell>
-                      <TableCell>{svc?.name ?? "—"}</TableCell>
+                      <TableCell>{svc}</TableCell>
                     </TableRow>
                   );
                 })}
