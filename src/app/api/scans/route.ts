@@ -36,19 +36,12 @@ function parsePorts(openPorts: string | undefined): number[] {
   return openPorts.split(",").map(p => parseInt(p.trim())).filter(p => !isNaN(p));
 }
 
-function parseServices(servicesJson: string | undefined): Record<string, number> {
+function parseServices(servicesJson: string | undefined): Record<string, string> {
   if (!servicesJson) return {};
-  try {
-    const raw = JSON.parse(servicesJson);
-    const result: Record<string, number> = {};
-    for (const [k, v] of Object.entries(raw)) {
-      result[k] = typeof v === "string" ? parseInt(k) : (v as number);
-    }
-    return result;
-  } catch { return {}; }
+  try { return JSON.parse(servicesJson); } catch { return {}; }
 }
 
-function assessDevice(vendor: string, deviceType: string, ports: number[], services: Record<string, number>, firmwareVer: string | undefined) {
+function assessDevice(vendor: string, deviceType: string, ports: number[], services: Record<string, string>, firmwareVer: string | undefined) {
   const findings: Array<{ port: number | null; service: string; riskLevel: string; detail: string }> = [];
   let cveScore = 0;
   let exposureScore = 0;
@@ -57,6 +50,7 @@ function assessDevice(vendor: string, deviceType: string, ports: number[], servi
 
   const vendorLower = (vendor || "").toLowerCase();
   const typeLower = (deviceType || "").toLowerCase();
+  const svcByPort = new Map(ports.map(p => [p, services[p.toString()] || ""]));
 
   for (const [key, vuln] of Object.entries(VENDOR_CVE_MAP)) {
     if (vendorLower.includes(key) || vendorLower === key) {
@@ -66,63 +60,97 @@ function assessDevice(vendor: string, deviceType: string, ports: number[], servi
   }
 
   for (const port of ports) {
-    const svcKey = Object.entries(INSECURE_SERVICES).find(([_, s]) => s.port === port);
-    if (svcKey) {
-      const [svcName, check] = svcKey;
-      exposureScore += check.severity === "Critical" ? 4 : check.severity === "High" ? 3 : 1.5;
-      findings.push({
-        port,
-        service: svcName,
-        riskLevel: check.severity,
-        detail: `${svcName.toUpperCase()} exposed on port ${port} — increases attack surface`,
-      });
+    const svc = svcByPort.get(port) || "";
+    for (const [svcName, check] of Object.entries(INSECURE_SERVICES)) {
+      if (svc === svcName) {
+        exposureScore += check.severity === "Critical" ? 4 : check.severity === "High" ? 3 : 1.5;
+        findings.push({
+          port, service: svcName, riskLevel: check.severity,
+          detail: `${svcName.toUpperCase()} exposed on port ${port} — transmits credentials and data in cleartext`,
+        });
+      }
     }
   }
 
-  if (["camera", "router", "smart plug", "sensor", "dvr"].some(t => typeLower.includes(t))) {
-    if (ports.some(p => [23, 80, 8080].includes(p))) {
+  if (["camera", "router", "smart plug", "sensor", "dvr", "switch", "gateway"].some(t => typeLower.includes(t))) {
+    if (ports.some(p => [22, 23, 80, 8080, 443].includes(p))) {
       credentialScore = 5;
       findings.push({
         port: null, service: "config", riskLevel: "High",
-        detail: `Device type "${deviceType}" commonly ships with default credentials`,
+        detail: `Default credentials — "${deviceType}" devices commonly ship with weak/default passwords`,
       });
     }
   }
 
-  const adminPorts = ports.filter(p => ADMIN_PORTS.includes(p));
-  if (adminPorts.length >= 2) {
-    networkScore += 2;
+  const hasHTTP = ports.some(p => svcByPort.get(p) === "http");
+  const hasHTTPS = ports.some(p => svcByPort.get(p) === "https");
+  const hasTelnet = ports.some(p => svcByPort.get(p) === "telnet");
+  const hasSSH = ports.some(p => svcByPort.get(p) === "ssh");
+
+  if (hasHTTP && !hasHTTPS) {
+    exposureScore += 2;
     findings.push({
       port: null, service: "config", riskLevel: "Medium",
-      detail: `Multiple admin interfaces: ${adminPorts.join(", ")}`,
+      detail: "Unencrypted data — HTTP exposed but no HTTPS. Traffic including credentials transmitted in cleartext.",
     });
   }
 
-  const unusualPorts = ports.filter(p => p > 1024 && ![1433, 1521, 2049, 3306, 3389, 5432, 6379, 8080, 8443, 9090, 27017].includes(p));
+  if (hasTelnet && hasSSH) {
+    networkScore += 2;
+    findings.push({
+      port: null, service: "config", riskLevel: "Medium",
+      detail: "Misconfigured services — both Telnet (insecure) and SSH (secure) open. Disable Telnet.",
+    });
+  }
+
+  const adminPorts = ports.filter(p => ADMIN_PORTS.includes(p));
+  if (adminPorts.length >= 3) {
+    networkScore += 3;
+    findings.push({
+      port: null, service: "config", riskLevel: "High",
+      detail: `Misconfigured services — ${adminPorts.length} admin interfaces: ${adminPorts.map(p => `${p}(${svcByPort.get(p) || "?"})`).join(", ")}`,
+    });
+  } else if (adminPorts.length >= 2) {
+    networkScore += 1.5;
+    findings.push({
+      port: null, service: "config", riskLevel: "Medium",
+      detail: `Multiple admin interfaces: ${adminPorts.map(p => `${p}(${svcByPort.get(p) || "?"})`).join(", ")}`,
+    });
+  }
+
+  const unusualPorts = ports.filter(p => p > 1024 && ![1433, 1521, 2049, 3306, 3389, 5432, 6379, 8080, 8443, 9090, 27017, 1883, 8883].includes(p));
   if (unusualPorts.length > 0) {
-    networkScore += unusualPorts.length * 0.5;
+    networkScore += Math.min(unusualPorts.length * 0.5, 3);
     for (const p of unusualPorts) {
-      findings.push({ port: p, service: "unknown", riskLevel: "Low", detail: `Unusual port ${p} open` });
+      findings.push({ port: p, service: svcByPort.get(p) || "unknown", riskLevel: "Low", detail: `Unnecessary open port ${p} — close if not required` });
     }
   }
 
   if (!firmwareVer) {
-    networkScore += 1;
-    findings.push({ port: null, service: "firmware", riskLevel: "Medium", detail: "Firmware version unknown" });
+    networkScore += 1.5;
+    findings.push({ port: null, service: "firmware", riskLevel: "Medium", detail: "Outdated firmware — version unknown, unable to verify patch status" });
+  } else if (/^[01]\.|^v?[01]\./i.test(firmwareVer.trim())) {
+    networkScore += 2;
+    findings.push({ port: null, service: "firmware", riskLevel: "High", detail: `Outdated firmware — version ${firmwareVer} appears significantly old` });
+  }
+
+  if (!firmwareVer || /eol|legacy|unsupported|discontinued/i.test(firmwareVer || "")) {
+    networkScore += 2.5;
+    findings.push({ port: null, service: "eol", riskLevel: "High", detail: "Unsupported device — may be end-of-life, no longer receiving security patches" });
   }
 
   cveScore = Math.min(10, cveScore);
   exposureScore = Math.min(10, exposureScore);
   credentialScore = Math.min(10, credentialScore);
   networkScore = Math.min(10, networkScore);
-  const composite = Math.round((cveScore * 0.35 + exposureScore * 0.3 + credentialScore * 0.2 + networkScore * 0.15) * 10) / 10;
+  const composite = Math.round((cveScore * 0.35 + exposureScore * 0.25 + credentialScore * 0.2 + networkScore * 0.2) * 10) / 10;
 
-  let recommendation = "Device appears properly configured. Continue monitoring.";
-  if (composite >= 8) recommendation = "Immediate action required. Isolate device, apply patches, change credentials.";
-  else if (composite >= 6) recommendation = "Prioritize remediation. Update firmware, change credentials, close unnecessary ports.";
-  else if (composite >= 3) recommendation = "Schedule review of open ports and disabled insecure services.";
+  let rec = "Device appears properly configured. Continue monitoring.";
+  if (composite >= 8) rec = "Immediate action required — isolate device, apply patches, change default credentials, disable insecure protocols.";
+  else if (composite >= 6) rec = "Prioritize remediation — update firmware, change credentials, disable Telnet/FTP/HTTP, close unnecessary ports.";
+  else if (composite >= 3) rec = "Schedule review — check for firmware updates, review open ports, enable HTTPS.";
 
-  return { findings, cveScore, exposureScore, credentialScore, networkScore, composite, recommendation };
+  return { findings, cveScore, exposureScore, credentialScore, networkScore, composite, recommendation: rec };
 }
 
 export async function GET() {

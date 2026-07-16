@@ -63,6 +63,7 @@ function assessDevice(vendor: string, deviceType: string, ports: number[], servi
 
   const vendorLower = (vendor || "").toLowerCase();
   const typeLower = (deviceType || "").toLowerCase();
+  const svcByPort = new Map(ports.map(p => [p, services[p.toString()] || ""]));
 
   // 1. Known CVE matches by vendor
   for (const [key, vuln] of Object.entries(VENDOR_CVE_MAP)) {
@@ -72,9 +73,9 @@ function assessDevice(vendor: string, deviceType: string, ports: number[], servi
     }
   }
 
-  // 2. Insecure service checks
+  // 2. Insecure communication protocols (Telnet, FTP, HTTP, SNMP, etc.)
   for (const port of ports) {
-    const svc = services[port.toString()] || "";
+    const svc = svcByPort.get(port) || "";
     for (const [svcName, check] of Object.entries(INSECURE_SERVICES)) {
       if (svc === svcName) {
         exposureScore += check.severity === "Critical" ? 4 : check.severity === "High" ? 3 : 1.5;
@@ -82,60 +83,97 @@ function assessDevice(vendor: string, deviceType: string, ports: number[], servi
           port,
           service: svcName,
           riskLevel: check.severity,
-          detail: `${svcName.toUpperCase()} exposed on port ${port} — ${check.severity === "Critical" ? "credentials and data in cleartext" : "increases attack surface"}`,
+          detail: `${svcName.toUpperCase()} exposed on port ${port} — ${check.severity === "Critical" ? "transmits credentials and data in cleartext" : "insecure protocol increases attack surface"}`,
         });
       }
     }
   }
 
-  // 3. Default credential risk for certain device types
-  if (["camera", "router", "smart plug", "sensor", "dvr"].some(t => typeLower.includes(t))) {
-    const telnetOrHttp = ports.some(p => services[p.toString()] === "telnet" || services[p.toString()] === "http");
-    if (telnetOrHttp || ports.some(p => [80, 8080, 23].includes(p))) {
+  // 3. Default credential risk
+  if (["camera", "router", "smart plug", "sensor", "dvr", "switch", "gateway"].some(t => typeLower.includes(t))) {
+    const hasAdminInterface = ports.some(p => [22, 23, 80, 8080, 443].includes(p));
+    if (hasAdminInterface) {
       credentialScore = 5;
       findings.push({
         port: null,
-        service: "http",
+        service: "config",
         riskLevel: "High",
-        detail: `Device type "${deviceType}" commonly ships with default credentials — verify and change immediately`,
+        detail: `Default credentials — "${deviceType}" devices commonly ship with weak/default passwords (admin/admin, root/root, etc.)`,
       });
     }
   }
 
-  // 4. Multiple admin interfaces
-  const adminPorts = ports.filter(p => ADMIN_PORTS.includes(p));
-  if (adminPorts.length >= 2) {
-    networkScore += 2;
+  // 4. Unencrypted data transmission (HTTP without HTTPS, Telnet without SSH)
+  const hasHTTP = ports.some(p => svcByPort.get(p) === "http");
+  const hasHTTPS = ports.some(p => svcByPort.get(p) === "https");
+  const hasTelnet = ports.some(p => svcByPort.get(p) === "telnet");
+  const hasSSH = ports.some(p => svcByPort.get(p) === "ssh");
+
+  if (hasHTTP && !hasHTTPS) {
+    exposureScore += 2;
     findings.push({
-      port: null,
-      service: "config",
-      riskLevel: "Medium",
-      detail: `Multiple admin interfaces exposed: ${adminPorts.map(p => `${p}(${services[p.toString()] || "?"})`).join(", ")}`,
+      port: null, service: "config", riskLevel: "Medium",
+      detail: "Unencrypted data — HTTP exposed but no HTTPS detected. All web traffic, including credentials, transmitted in cleartext.",
     });
   }
 
-  // 5. Unnecessary/unknown high ports
-  const unusualPorts = ports.filter(p => p > 1024 && ![1433, 1521, 2049, 3306, 3389, 5432, 6379, 8080, 8443, 9090, 27017].includes(p));
+  if (hasTelnet && hasSSH) {
+    networkScore += 2;
+    findings.push({
+      port: null, service: "config", riskLevel: "Medium",
+      detail: "Misconfigured services — both Telnet (insecure) and SSH (secure) are open. Disable Telnet and use SSH exclusively.",
+    });
+  }
+
+  // 5. Multiple admin interfaces (increased attack surface)
+  const adminPorts = ports.filter(p => ADMIN_PORTS.includes(p));
+  if (adminPorts.length >= 3) {
+    networkScore += 3;
+    findings.push({
+      port: null, service: "config", riskLevel: "High",
+      detail: `Misconfigured services — ${adminPorts.length} administrative interfaces exposed: ${adminPorts.map(p => `${p}(${svcByPort.get(p) || "?"})`).join(", ")}. Each additional interface multiplies attack surface.`,
+    });
+  } else if (adminPorts.length >= 2) {
+    networkScore += 1.5;
+    findings.push({
+      port: null, service: "config", riskLevel: "Medium",
+      detail: `Multiple admin interfaces: ${adminPorts.map(p => `${p}(${svcByPort.get(p) || "?"})`).join(", ")}. Reduce to single secure interface.`,
+    });
+  }
+
+  // 6. Unnecessary open ports
+  const unusualPorts = ports.filter(p => p > 1024 && ![1433, 1521, 2049, 3306, 3389, 5432, 6379, 8080, 8443, 9090, 27017, 1883, 8883].includes(p));
   if (unusualPorts.length > 0) {
-    networkScore += unusualPorts.length * 0.5;
+    networkScore += Math.min(unusualPorts.length * 0.5, 3);
     for (const p of unusualPorts) {
       findings.push({
-        port: p,
-        service: services[p.toString()] || "unknown",
-        riskLevel: "Low",
-        detail: `Unusual port ${p} open — may indicate custom service or backdoor`,
+        port: p, service: svcByPort.get(p) || "unknown", riskLevel: "Low",
+        detail: `Unnecessary open port ${p} — increases attack surface. Close if not required.`,
       });
     }
   }
 
-  // 6. No firmware version
+  // 7. Outdated firmware / missing patches
   if (!firmwareVer) {
-    networkScore += 1;
+    networkScore += 1.5;
     findings.push({
-      port: null,
-      service: "firmware",
-      riskLevel: "Medium",
-      detail: "Firmware version not provided — device may be running outdated software",
+      port: null, service: "firmware", riskLevel: "Medium",
+      detail: "Outdated firmware — version not provided, unable to verify patch status. Devices running unknown firmware versions are likely unpatched.",
+    });
+  } else if (/^[01]\.|^v?[01]\./i.test(firmwareVer.trim())) {
+    networkScore += 2;
+    findings.push({
+      port: null, service: "firmware", riskLevel: "High",
+      detail: `Outdated firmware — version ${firmwareVer} appears significantly old. Check manufacturer for security updates.`,
+    });
+  }
+
+  // 8. Unsupported / end-of-life device
+  if (!firmwareVer || /eol|legacy|unsupported|discontinued/i.test(firmwareVer || "")) {
+    networkScore += 2.5;
+    findings.push({
+      port: null, service: "eol", riskLevel: "High",
+      detail: "Unsupported device — no firmware version or product may be end-of-life. EOL devices no longer receive security patches and should be replaced.",
     });
   }
 
@@ -143,14 +181,14 @@ function assessDevice(vendor: string, deviceType: string, ports: number[], servi
   exposureScore = Math.min(10, exposureScore);
   credentialScore = Math.min(10, credentialScore);
   networkScore = Math.min(10, networkScore);
-  const composite = Math.round((cveScore * 0.35 + exposureScore * 0.3 + credentialScore * 0.2 + networkScore * 0.15) * 10) / 10;
+  const composite = Math.round((cveScore * 0.35 + exposureScore * 0.25 + credentialScore * 0.2 + networkScore * 0.2) * 10) / 10;
 
-  let recommendation = "Device appears properly configured. Continue monitoring.";
-  if (composite >= 8) recommendation = "Immediate action required. Isolate device, apply patches, change credentials.";
-  else if (composite >= 6) recommendation = "Prioritize remediation. Update firmware, change credentials, close unnecessary ports.";
-  else if (composite >= 3) recommendation = "Schedule review of open ports and disabled insecure services.";
+  let rec = "Device appears properly configured. Continue monitoring.";
+  if (composite >= 8) rec = "Immediate action required — isolate device from network, apply all security patches, change default credentials, disable insecure protocols.";
+  else if (composite >= 6) rec = "Prioritize remediation — update firmware, change credentials, disable Telnet/FTP/HTTP, close unnecessary ports.";
+  else if (composite >= 3) rec = "Schedule review — check for firmware updates, review open ports, ensure HTTPS is enabled where possible.";
 
-  return { findings, cveScore, exposureScore, credentialScore, networkScore, composite, recommendation };
+  return { findings, cveScore, exposureScore, credentialScore, networkScore, composite, recommendation: rec };
 }
 
 export async function GET() {
